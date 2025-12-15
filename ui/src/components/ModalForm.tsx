@@ -33,7 +33,6 @@ export interface ModalFormProps<T extends NonNullable<unknown> = any> extends Om
   title?: ModalProps["title"];
   trigger?: React.ReactNode;
   width?: ModalProps["width"];
-  onClose?: (e: React.MouseEvent | React.KeyboardEvent) => void | Promise<unknown>;
   onFinish?: (values: T) => unknown | Promise<unknown>;
   onOpenChange?: (open: boolean) => void;
 }
@@ -75,7 +74,7 @@ const ModalForm = <T extends NonNullable<unknown> = any>({
   });
 
   const mergedFormProps: FormProps = {
-    clearOnDestroy: modalProps?.destroyOnHidden ? true : undefined,
+    clearOnDestroy: modalProps?.destroyOnHidden ? true : void 0,
     ...formProps,
     ...props,
   };
@@ -122,7 +121,7 @@ const ModalForm = <T extends NonNullable<unknown> = any>({
         onOk={handleOkClick}
         onCancel={handleCancelClick}
       >
-        <div className="pb-2 pt-4">
+        <div className="py-3">
           <Form className={className} style={style} {...mergedFormProps} form={formInst}>
             {children}
           </Form>

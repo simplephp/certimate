@@ -1,30 +1,36 @@
-import { useRef, useState } from "react";
+import { startTransition, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useControllableValue } from "ahooks";
-import { Button, Drawer, Space, notification } from "antd";
+import { IconX } from "@tabler/icons-react";
+import { useControllableValue, useGetState } from "ahooks";
+import { App, Button, Drawer, Flex, Form } from "antd";
 
+import { notifyTest } from "@/api/notify";
+import AccessProviderPicker from "@/components/provider/AccessProviderPicker";
+import Show from "@/components/Show";
 import { type AccessModel } from "@/domain/access";
+import { ACCESS_USAGES } from "@/domain/provider";
 import { useTriggerElement, useZustandShallowSelector } from "@/hooks";
 import { useAccessesStore } from "@/stores/access";
 import { getErrMsg } from "@/utils/error";
 
-import AccessForm, { type AccessFormInstance, type AccessFormProps } from "./AccessForm";
+import AccessForm, { type AccessFormModes, type AccessFormProps, type AccessFormUsages } from "./AccessForm";
 
-export type AccessEditDrawerProps = {
+export interface AccessEditDrawerProps {
+  afterClose?: () => void;
+  afterSubmit?: (record: AccessModel) => void;
   data?: AccessFormProps["initialValues"];
   loading?: boolean;
+  mode: AccessFormModes;
   open?: boolean;
-  scene: AccessFormProps["scene"];
   trigger?: React.ReactNode;
-  usage?: AccessFormProps["usage"];
+  usage?: AccessFormUsages;
   onOpenChange?: (open: boolean) => void;
-  afterSubmit?: (record: AccessModel) => void;
-};
+}
 
-const AccessEditDrawer = ({ data, loading, trigger, scene, usage, afterSubmit, ...props }: AccessEditDrawerProps) => {
+const AccessEditDrawer = ({ afterSubmit, mode, data, loading, trigger, usage, ...props }: AccessEditDrawerProps) => {
   const { t } = useTranslation();
 
-  const [notificationApi, NotificationContextHolder] = notification.useNotification();
+  const { message, notification } = App.useApp();
 
   const { createAccess, updateAccess } = useAccessesStore(useZustandShallowSelector(["createAccess", "updateAccess"]));
 
@@ -34,43 +40,77 @@ const AccessEditDrawer = ({ data, loading, trigger, scene, usage, afterSubmit, .
     trigger: "onOpenChange",
   });
 
+  const afterClose = () => {
+    setFormPending(false);
+    setFormChanged(false);
+    setIsTesting(false);
+    props.afterClose?.();
+  };
+
   const triggerEl = useTriggerElement(trigger, { onClick: () => setOpen(true) });
 
-  const formRef = useRef<AccessFormInstance>(null);
+  const providerFilter = AccessForm.useProviderFilterByUsage(usage);
+
+  const [formInst] = Form.useForm();
   const [formPending, setFormPending] = useState(false);
+  const [formChanged, setFormChanged] = useState(false);
+
+  const fieldProvider = Form.useWatch<string>("provider", { form: formInst, preserve: true });
+
+  const [isTesting, setIsTesting] = useState(false);
+
+  const handleProviderPick = (value: string) => {
+    formInst.setFieldValue("provider", value);
+  };
+
+  const handleFormChange = () => {
+    setFormChanged(true);
+  };
 
   const handleOkClick = async () => {
+    let formValues: AccessModel;
+
     setFormPending(true);
     try {
-      await formRef.current!.validateFields();
+      formValues = await formInst.validateFields();
+      formValues.reserve = usage === "ca" ? "ca" : usage === "notification" ? "notif" : void 0;
     } catch (err) {
+      message.warning(t("common.errmsg.form_invalid"));
+
       setFormPending(false);
       throw err;
     }
 
     try {
-      let values: AccessModel = formRef.current!.getFieldsValue();
+      switch (mode) {
+        case "create":
+          {
+            if (data?.id) {
+              throw "Invalid props: `data`";
+            }
 
-      if (scene === "add") {
-        if (data?.id) {
-          throw "Invalid props: `data`";
-        }
+            formValues = await createAccess(formValues);
+          }
+          break;
 
-        values = await createAccess(values);
-      } else if (scene === "edit") {
-        if (!data?.id) {
-          throw "Invalid props: `data`";
-        }
+        case "modify":
+          {
+            if (!data?.id) {
+              throw "Invalid props: `data`";
+            }
 
-        values = await updateAccess({ ...data, ...values });
-      } else {
-        throw "Invalid props: `scene`";
+            formValues = await updateAccess({ ...data, ...formValues });
+          }
+          break;
+
+        default:
+          throw "Invalid props: `mode`";
       }
 
-      afterSubmit?.(values);
+      afterSubmit?.(formValues);
       setOpen(false);
     } catch (err) {
-      notificationApi.error({ message: t("common.text.request_error"), description: getErrMsg(err) });
+      notification.error({ title: t("common.text.request_error"), description: getErrMsg(err) });
 
       throw err;
     } finally {
@@ -84,35 +124,155 @@ const AccessEditDrawer = ({ data, loading, trigger, scene, usage, afterSubmit, .
     setOpen(false);
   };
 
+  const handleTestPushClick = async () => {
+    setIsTesting(true);
+
+    try {
+      await formInst.validateFields();
+    } catch {
+      setIsTesting(false);
+      return;
+    }
+
+    try {
+      await notifyTest({ provider: fieldProvider, accessId: data!.id });
+      message.success(t("common.text.operation_succeeded"));
+    } catch (err) {
+      notification.error({ title: t("common.text.request_error"), description: getErrMsg(err) });
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
   return (
     <>
-      {NotificationContextHolder}
-
       {triggerEl}
 
       <Drawer
-        afterOpenChange={setOpen}
-        closable={!formPending}
+        afterOpenChange={(open) => !open && afterClose?.()}
+        autoFocus
+        closeIcon={false}
         destroyOnHidden
         footer={
-          <Space className="w-full justify-end">
-            <Button onClick={handleCancelClick}>{t("common.button.cancel")}</Button>
-            <Button loading={formPending} type="primary" onClick={handleOkClick}>
-              {scene === "edit" ? t("common.button.save") : t("common.button.submit")}
-            </Button>
-          </Space>
+          fieldProvider ? (
+            <Flex className="px-2" justify="space-between">
+              {usage === "notification" ? (
+                <Button disabled={mode !== "modify" || formChanged} loading={isTesting} onClick={handleTestPushClick}>
+                  {t("access.action.test_push.button")}
+                </Button>
+              ) : (
+                <span>{/* TODO: 测试连接 */}</span>
+              )}
+              <Flex justify="end" gap="small">
+                <Button disabled={isTesting} onClick={handleCancelClick}>
+                  {t("common.button.cancel")}
+                </Button>
+                <Button disabled={isTesting} loading={formPending} type="primary" onClick={handleOkClick}>
+                  {mode === "modify" ? t("common.button.save") : t("common.button.submit")}
+                </Button>
+              </Flex>
+            </Flex>
+          ) : (
+            false
+          )
         }
         loading={loading}
         maskClosable={!formPending}
         open={open}
-        title={t(`access.action.${scene}`)}
-        width={720}
-        onClose={() => setOpen(false)}
+        size="large"
+        title={
+          <Flex align="center" justify="space-between" gap="small">
+            <div className="flex-1 truncate">
+              {mode === "modify" && !!data?.id ? t("access.action.modify.modal.title") + ` #${data.id}` : t(`access.action.${mode}.modal.title`)}
+            </div>
+            <Button
+              className="ant-drawer-close"
+              style={{ marginInline: 0 }}
+              icon={<IconX size="1.25em" />}
+              size="small"
+              type="text"
+              onClick={handleCancelClick}
+            />
+          </Flex>
+        }
+        onClose={handleCancelClick}
       >
-        <AccessForm ref={formRef} initialValues={data} scene={scene === "add" ? "add" : "edit"} usage={usage} />
+        <Show when={!fieldProvider && !data?.provider}>
+          <AccessProviderPicker
+            autoFocus
+            gap="large"
+            placeholder={t("access.form.provider.search.placeholder")}
+            showOptionTags={
+              usage == null ||
+              (usage === "dns-hosting" ? { ["builtin"]: true, [ACCESS_USAGES.DNS]: true, [ACCESS_USAGES.HOSTING]: true } : { ["builtin"]: true })
+            }
+            showSearch
+            onFilter={providerFilter}
+            onSelect={handleProviderPick}
+          />
+        </Show>
+
+        <div style={{ display: fieldProvider || data?.provider ? "block" : "none" }}>
+          <AccessForm form={formInst} disabled={formPending} initialValues={data} mode={mode} usage={usage} onFormValuesChange={handleFormChange} />
+        </div>
       </Drawer>
     </>
   );
 };
 
-export default AccessEditDrawer;
+const useDrawer = () => {
+  type DataType = AccessEditDrawerProps["data"];
+  const [data, setData, getData] = useGetState<DataType>();
+  const [loading, setLoading] = useState<boolean>();
+  const [open, setOpen] = useState(false);
+
+  const onOpenChange = useCallback((open: boolean) => {
+    setOpen(open);
+  }, []);
+
+  return {
+    drawerProps: {
+      afterClose: () => {
+        startTransition(() => {
+          if (!open) {
+            setData(void 0);
+            setLoading(void 0);
+          }
+        });
+      },
+      data,
+      loading,
+      open,
+      onOpenChange,
+    },
+
+    open: ({ data, loading }: { data: NonNullable<DataType>; loading?: boolean }) => {
+      setData(data);
+      setLoading(loading);
+      setOpen(true);
+
+      return {
+        safeUpdate: ({ data, loading }: { data?: NonNullable<DataType>; loading?: boolean }) => {
+          if (data != null) {
+            if (data.id !== getData()?.id) return; // 确保数据不脏读
+
+            setData(data);
+          }
+
+          if (loading != null) {
+            setLoading(loading);
+          }
+        },
+      };
+    },
+    close: () => {
+      setOpen(false);
+    },
+  };
+};
+
+const _default = Object.assign(AccessEditDrawer, {
+  useDrawer,
+});
+
+export default _default;

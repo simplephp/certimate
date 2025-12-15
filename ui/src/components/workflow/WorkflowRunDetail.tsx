@@ -1,86 +1,203 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  CheckCircleOutlined as CheckCircleOutlinedIcon,
-  CheckOutlined as CheckOutlinedIcon,
-  ClockCircleOutlined as ClockCircleOutlinedIcon,
-  CloseCircleOutlined as CloseCircleOutlinedIcon,
-  DownloadOutlined as DownloadOutlinedIcon,
-  RightOutlined as RightOutlinedIcon,
-  SelectOutlined as SelectOutlinedIcon,
-  SettingOutlined as SettingOutlinedIcon,
-  StopOutlined as StopOutlinedIcon,
-  SyncOutlined as SyncOutlinedIcon,
-} from "@ant-design/icons";
+import { EditorState, FlowLayoutDefault } from "@flowgram.ai/fixed-layout-editor";
+import { IconBrowserShare, IconBug, IconCheck, IconDots, IconDownload, IconSettings2, IconTransferOut } from "@tabler/icons-react";
 import { useRequest } from "ahooks";
-import {
-  Button,
-  Collapse,
-  Divider,
-  Dropdown,
-  Empty,
-  Flex,
-  Skeleton,
-  Space,
-  Spin,
-  Table,
-  type TableProps,
-  Tooltip,
-  Typography,
-  notification,
-  theme,
-} from "antd";
+import { Alert, App, Button, Card, Divider, Dropdown, Empty, Skeleton, Table, type TableProps, Tooltip, Typography, theme } from "antd";
 import dayjs from "dayjs";
 import { ClientResponseError } from "pocketbase";
 
 import CertificateDetailDrawer from "@/components/certificate/CertificateDetailDrawer";
 import Show from "@/components/Show";
 import { type CertificateModel } from "@/domain/certificate";
-import { type WorkflowLogModel } from "@/domain/workflowLog";
+import { WorkflowLogLevel, type WorkflowLogModel } from "@/domain/workflowLog";
 import { WORKFLOW_RUN_STATUSES, type WorkflowRunModel } from "@/domain/workflowRun";
 import { useBrowserTheme } from "@/hooks";
 import { listByWorkflowRunId as listCertificatesByWorkflowRunId } from "@/repository/certificate";
 import { listByWorkflowRunId as listLogsByWorkflowRunId } from "@/repository/workflowLog";
+import { subscribe as subscribeWorkflowRun } from "@/repository/workflowRun";
 import { mergeCls } from "@/utils/css";
 import { getErrMsg } from "@/utils/error";
 
-export type WorkflowRunDetailProps = {
+import WorkflowDesigner from "./designer/Designer";
+import WorkflowToolbar from "./designer/Toolbar";
+import WorkflowGraphExportModal from "./WorkflowGraphExportModal";
+import WorkflowStatus from "./WorkflowStatus";
+
+export interface WorkflowRunDetailProps {
   className?: string;
   style?: React.CSSProperties;
   data: WorkflowRunModel;
-};
+}
 
-const WorkflowRunDetail = ({ data, ...props }: WorkflowRunDetailProps) => {
+const WorkflowRunDetail = ({ className, style, ...props }: WorkflowRunDetailProps) => {
+  const { t } = useTranslation();
+
+  const [innerData, setInnerData] = useState(props.data);
+  const mergedData = useMemo(() => ({ ...props.data, ...innerData }), [innerData, props.data]);
+
+  const unsubscriberRef = useRef<() => void>();
+  useEffect(() => {
+    if (props.data.status === WORKFLOW_RUN_STATUSES.PENDING || props.data.status === WORKFLOW_RUN_STATUSES.PROCESSING) {
+      subscribeWorkflowRun(props.data.id, (cb) => {
+        setInnerData(cb.record);
+
+        if (cb.record.status !== WORKFLOW_RUN_STATUSES.PENDING && cb.record.status !== WORKFLOW_RUN_STATUSES.PROCESSING) {
+          unsubscriberRef.current?.();
+          unsubscriberRef.current = undefined;
+        }
+      }).then((unsubscriber) => {
+        unsubscriberRef.current = unsubscriber;
+      });
+    }
+
+    return () => {
+      unsubscriberRef.current?.();
+      unsubscriberRef.current = undefined;
+    };
+  }, [props.data.id, props.data.status]);
+
   return (
-    <div {...props}>
-      <Show when={!!data}>
-        <WorkflowRunLogs runId={data.id} runStatus={data.status} />
-      </Show>
+    <div className={className} style={style}>
+      <Alert
+        showIcon
+        title={
+          <div className="text-xs">
+            {mergedData.endedAt
+              ? t("workflow_run.base.description_with_time_cost", {
+                  trigger: t(`workflow_run.base.trigger.${mergedData.trigger}`),
+                  startedAt: dayjs(mergedData.startedAt).format("YYYY-MM-DD HH:mm:ss"),
+                  timeCost: dayjs(mergedData.endedAt).diff(dayjs(mergedData.startedAt), "second") + "s",
+                })
+              : t("workflow_run.base.description", {
+                  trigger: t(`workflow_run.base.trigger.${mergedData.trigger}`),
+                  startedAt: dayjs(mergedData.startedAt).format("YYYY-MM-DD HH:mm:ss"),
+                })}
+          </div>
+        }
+        type={
+          {
+            [WORKFLOW_RUN_STATUSES.SUCCEEDED]: "success" as const,
+            [WORKFLOW_RUN_STATUSES.FAILED]: "error" as const,
+            [WORKFLOW_RUN_STATUSES.CANCELED]: "warning" as const,
+          }[mergedData.status] ?? ("info" as const)
+        }
+      />
+      {!!mergedData.error && (
+        <Alert
+          className="mt-1"
+          icon={<IconBug size="1em" color="var(--color-error)" />}
+          showIcon
+          title={<div className="text-xs text-error">{mergedData.error}</div>}
+        />
+      )}
 
-      <Show when={!!data && data.status === WORKFLOW_RUN_STATUSES.SUCCEEDED}>
-        <Divider />
-        <WorkflowRunArtifacts runId={data.id} />
+      <div className="mt-8">
+        <Typography.Title level={5}>{t("workflow_run.process")}</Typography.Title>
+        <WorkflowRunProcess runData={mergedData} />
+      </div>
+
+      <div className="mt-8">
+        <Typography.Title level={5}>{t("workflow_run.logs")}</Typography.Title>
+        <WorkflowRunLogs runId={mergedData.id} runStatus={mergedData.status} />
+      </div>
+
+      <Show when={mergedData.status === WORKFLOW_RUN_STATUSES.SUCCEEDED}>
+        <div className="mt-8">
+          <Typography.Title level={5}>{t("workflow_run.artifacts")}</Typography.Title>
+          <WorkflowRunArtifacts runId={mergedData.id} />
+        </div>
       </Show>
     </div>
+  );
+};
+
+const WorkflowRunProcess = ({ runData }: { runData: WorkflowRunModel }) => {
+  const { t } = useTranslation();
+
+  const { token: themeToken } = theme.useToken();
+
+  const { modalProps: graphExportModalProps, ...graphExportModal } = WorkflowGraphExportModal.useModal();
+
+  const handleExportClick = () => {
+    graphExportModal.open({ data: runData.graph! });
+  };
+
+  return (
+    <>
+      <Card
+        className="size-full overflow-hidden"
+        styles={{
+          body: {
+            position: "relative",
+            height: "240px",
+            padding: 0,
+            cursor: "grab",
+          },
+        }}
+      >
+        <WorkflowDesigner
+          defaultEditorState={EditorState.STATE_MOUSE_FRIENDLY_SELECT.id}
+          defaultLayout={FlowLayoutDefault.HORIZONTAL_FIXED_LAYOUT}
+          initialData={runData.graph}
+          readonly
+        >
+          <div className="absolute bottom-4 z-10 w-full px-4">
+            <div className="container">
+              <div className="flex items-center justify-end gap-2">
+                <WorkflowToolbar
+                  style={{
+                    backgroundColor: themeToken.colorBgContainer,
+                    borderRadius: themeToken.borderRadius,
+                  }}
+                  size="small"
+                  showMouseState={false}
+                  showLayout={false}
+                  showMinimap={false}
+                  showZoomLevel={false}
+                />
+
+                <Dropdown
+                  menu={{
+                    items: [
+                      {
+                        key: "export",
+                        label: t("workflow_run.process.menu.export"),
+                        icon: <IconTransferOut size="1.25em" />,
+                        onClick: handleExportClick,
+                      },
+                    ],
+                  }}
+                  trigger={["click"]}
+                >
+                  <Button icon={<IconDots size="1.25em" />} size="small" />
+                </Dropdown>
+              </div>
+            </div>
+          </div>
+        </WorkflowDesigner>
+      </Card>
+
+      <WorkflowGraphExportModal {...graphExportModalProps} />
+    </>
   );
 };
 
 const WorkflowRunLogs = ({ runId, runStatus }: { runId: string; runStatus: string }) => {
   const { t } = useTranslation();
 
-  const { token: themeToken } = theme.useToken();
   const { theme: browserTheme } = useBrowserTheme();
 
   type Log = Pick<WorkflowLogModel, "timestamp" | "level" | "message" | "data">;
   type LogGroup = { id: string; name: string; records: Log[] };
   const [listData, setListData] = useState<LogGroup[]>([]);
-  const { loading } = useRequest(
+  const { loading, ...req } = useRequest(
     () => {
       return listLogsByWorkflowRunId(runId);
     },
     {
       refreshDeps: [runId, runStatus],
-      pollingInterval: runStatus === WORKFLOW_RUN_STATUSES.PENDING || runStatus === WORKFLOW_RUN_STATUSES.RUNNING ? 3000 : 0,
+      pollingInterval: 1500,
       pollingWhenHidden: false,
       throttleWait: 500,
       onSuccess: (res) => {
@@ -98,6 +215,11 @@ const WorkflowRunLogs = ({ runId, runStatus }: { runId: string; runStatus: strin
           }, [] as LogGroup[])
         );
       },
+      onFinally: () => {
+        if (runStatus === WORKFLOW_RUN_STATUSES.PENDING || runStatus === WORKFLOW_RUN_STATUSES.PROCESSING) {
+          req.cancel();
+        }
+      },
       onError: (err) => {
         if (err instanceof ClientResponseError && err.isAbort) {
           return;
@@ -113,58 +235,19 @@ const WorkflowRunLogs = ({ runId, runStatus }: { runId: string; runStatus: strin
   const [showTimestamp, setShowTimestamp] = useState(true);
   const [showWhitespace, setShowWhitespace] = useState(true);
 
-  const renderBadge = () => {
-    switch (runStatus) {
-      case WORKFLOW_RUN_STATUSES.PENDING:
-        return (
-          <Flex gap="small">
-            <ClockCircleOutlinedIcon />
-            {t("workflow_run.props.status.pending")}
-          </Flex>
-        );
-      case WORKFLOW_RUN_STATUSES.RUNNING:
-        return (
-          <Flex gap="small" style={{ color: themeToken.colorInfo }}>
-            <SyncOutlinedIcon spin />
-            {t("workflow_run.props.status.running")}
-          </Flex>
-        );
-      case WORKFLOW_RUN_STATUSES.SUCCEEDED:
-        return (
-          <Flex gap="small" style={{ color: themeToken.colorSuccess }}>
-            <CheckCircleOutlinedIcon />
-            {t("workflow_run.props.status.succeeded")}
-          </Flex>
-        );
-      case WORKFLOW_RUN_STATUSES.FAILED:
-        return (
-          <Flex gap="small" style={{ color: themeToken.colorError }}>
-            <CloseCircleOutlinedIcon />
-            {t("workflow_run.props.status.failed")}
-          </Flex>
-        );
-      case WORKFLOW_RUN_STATUSES.CANCELED:
-        return (
-          <Flex gap="small" style={{ color: themeToken.colorWarning }}>
-            <StopOutlinedIcon />
-            {t("workflow_run.props.status.canceled")}
-          </Flex>
-        );
-    }
+  const renderLogRecord = (record: Log) => {
+    let timestamp = dayjs(record.timestamp).format("YYYY-MM-DD HH:mm:ss");
+    timestamp = `[${timestamp}]`;
 
-    return <></>;
-  };
-
-  const renderRecord = (record: Log) => {
     let message = <>{record.message}</>;
     if (record.data != null && Object.keys(record.data).length > 0) {
       message = (
         <details>
           <summary>{record.message}</summary>
           {Object.entries(record.data).map(([key, value]) => (
-            <div key={key} className="flex space-x-2 " style={{ wordBreak: "break-word" }}>
+            <div key={key} className="flex space-x-2" style={{ wordBreak: "break-word" }}>
               <div className="whitespace-nowrap">{key}:</div>
-              <div className={!showWhitespace ? "whitespace-pre-line" : ""}>{JSON.stringify(value)}</div>
+              <div className={showWhitespace ? "whitespace-normal" : "whitespace-pre-line"}>{JSON.stringify(value)}</div>
             </div>
           ))}
         </details>
@@ -172,15 +255,19 @@ const WorkflowRunLogs = ({ runId, runStatus }: { runId: string; runStatus: strin
     }
 
     return (
-      <div className="flex space-x-2 text-xs" style={{ wordBreak: "break-word" }}>
-        {showTimestamp ? <div className="whitespace-nowrap text-stone-400">[{dayjs(record.timestamp).format("YYYY-MM-DD HH:mm:ss")}]</div> : <></>}
+      <div className="flex space-x-2" style={{ wordBreak: "break-word" }}>
+        {showTimestamp && <div className="font-mono whitespace-nowrap text-stone-400">{timestamp}</div>}
         <div
           className={mergeCls(
-            "font-mono",
-            record.level === "DEBUG" ? "text-stone-400" : "",
-            record.level === "WARN" ? "text-yellow-600" : "",
-            record.level === "ERROR" ? "text-red-600" : "",
-            !showWhitespace ? "whitespace-pre-line" : ""
+            "flex-1 font-mono",
+            { ["whitespace-pre-line"]: !showWhitespace },
+            record.level < WorkflowLogLevel.Info
+              ? "text-stone-400"
+              : record.level < WorkflowLogLevel.Warn
+                ? ""
+                : record.level < WorkflowLogLevel.Error
+                  ? "text-warning"
+                  : "text-error"
           )}
         >
           {message}
@@ -195,12 +282,19 @@ const WorkflowRunLogs = ({ runId, runStatus }: { runId: string; runStatus: strin
       .map((group) => {
         const escape = (str: string) => str.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
         return (
-          group.name +
+          `#${group.id} ${group.name}` +
           NEWLINE +
           group.records
             .map((record) => {
               const datetime = dayjs(record.timestamp).format("YYYY-MM-DDTHH:mm:ss.SSSZ");
-              const level = record.level;
+              const level =
+                record.level < WorkflowLogLevel.Info
+                  ? "DBUG"
+                  : record.level < WorkflowLogLevel.Warn
+                    ? "INFO"
+                    : record.level < WorkflowLogLevel.Error
+                      ? "WARN"
+                      : "ERRO";
               const message = record.message;
               const data = record.data && Object.keys(record.data).length > 0 ? JSON.stringify(record.data) : "";
               return `[${datetime}] [${level}] ${escape(message)} ${escape(data)}`.trim();
@@ -220,88 +314,70 @@ const WorkflowRunLogs = ({ runId, runStatus }: { runId: string; runStatus: strin
   };
 
   return (
-    <>
-      <Typography.Title level={5}>{t("workflow_run.logs")}</Typography.Title>
-      <div className="rounded-md bg-black text-stone-200">
-        <div className="flex items-center gap-2 p-4">
-          <div className="grow overflow-hidden">{renderBadge()}</div>
-          <div>
-            <Dropdown
-              menu={{
-                items: [
-                  {
-                    key: "show-timestamp",
-                    label: t("workflow_run.logs.menu.show_timestamps"),
-                    icon: <CheckOutlinedIcon className={showTimestamp ? "visible" : "invisible"} />,
-                    onClick: () => setShowTimestamp(!showTimestamp),
-                  },
-                  {
-                    key: "show-whitespace",
-                    label: t("workflow_run.logs.menu.show_whitespaces"),
-                    icon: <CheckOutlinedIcon className={showWhitespace ? "visible" : "invisible"} />,
-                    onClick: () => setShowWhitespace(!showWhitespace),
-                  },
-                  {
-                    type: "divider",
-                  },
-                  {
-                    key: "download-logs",
-                    label: t("workflow_run.logs.menu.download_logs"),
-                    icon: <DownloadOutlinedIcon className="invisible" />,
-                    onClick: handleDownloadClick,
-                  },
-                ],
-              }}
-              trigger={["click"]}
-            >
-              <Button color="primary" icon={<SettingOutlinedIcon />} ghost={browserTheme === "light"} />
-            </Dropdown>
-          </div>
+    <div className="rounded-md bg-black text-stone-200">
+      <div className="flex items-center gap-2 p-4">
+        <div className="grow overflow-hidden">
+          <WorkflowStatus value={runStatus} />
         </div>
+        <div>
+          <Dropdown
+            menu={{
+              items: [
+                {
+                  key: "show-timestamp",
+                  label: t("workflow_run.logs.menu.show_timestamps"),
+                  icon: <IconCheck className={showTimestamp ? "visible" : "invisible"} size="1.25em" />,
+                  onClick: () => setShowTimestamp(!showTimestamp),
+                },
+                {
+                  key: "show-whitespace",
+                  label: t("workflow_run.logs.menu.show_whitespaces"),
+                  icon: <IconCheck className={showWhitespace ? "visible" : "invisible"} size="1.25em" />,
+                  onClick: () => setShowWhitespace(!showWhitespace),
+                },
+                {
+                  type: "divider",
+                },
+                {
+                  key: "download-logs",
+                  label: t("workflow_run.logs.menu.download_logs"),
+                  icon: <IconDownload className="invisible" size="1.25em" />,
+                  onClick: handleDownloadClick,
+                },
+              ],
+            }}
+            trigger={["click"]}
+          >
+            <Button color="primary" icon={<IconSettings2 size="1.25em" />} ghost={browserTheme === "light"} />
+          </Dropdown>
+        </div>
+      </div>
 
-        <Divider className="my-0 bg-stone-800" />
+      <Divider className="my-0 bg-stone-800" />
 
-        <Show
-          when={!loading || listData.length > 0}
-          fallback={
-            <Spin spinning>
-              <Skeleton />
-            </Spin>
-          }
-        >
-          <div className="py-2">
-            <Collapse
-              style={{ color: "inherit" }}
-              bordered={false}
-              defaultActiveKey={listData.map((group) => group.id)}
-              expandIcon={({ isActive }) => <RightOutlinedIcon rotate={isActive ? 90 : 0} />}
-              items={listData.map((group) => {
-                return {
-                  key: group.id,
-                  classNames: {
-                    header: "text-sm text-stone-200",
-                    body: "text-stone-200",
-                  },
-                  style: { color: "inherit", border: "none" },
-                  styles: {
-                    header: { color: "inherit" },
-                  },
-                  label: group.name,
-                  children: <div className="flex flex-col space-y-1">{group.records.map((record) => renderRecord(record))}</div>,
-                };
-              })}
-            />
-          </div>
+      <div className="min-h-8 px-4 py-2">
+        <Show when={!loading || listData.length > 0} fallback={<Skeleton />}>
+          {listData.map((group) => {
+            return (
+              <div className="mb-3">
+                <div className="truncate text-xs leading-loose">
+                  <span className="font-mono text-stone-400">{`#${group.id}\u00A0`}</span>
+                  <span>{group.name}</span>
+                </div>
+                <div className="flex flex-col text-xs leading-relaxed">{group.records.map((record) => renderLogRecord(record))}</div>
+              </div>
+            );
+          })}
         </Show>
       </div>
-    </>
+    </div>
   );
 };
 
 const WorkflowRunArtifacts = ({ runId }: { runId: string }) => {
   const { t } = useTranslation();
 
-  const [notificationApi, NotificationContextHolder] = notification.useNotification();
+  const { notification } = App.useApp();
 
   const tableColumns: TableProps<CertificateModel>["columns"] = [
     {
@@ -319,35 +395,36 @@ const WorkflowRunArtifacts = ({ runId }: { runId: string }) => {
     {
       key: "name",
       title: t("workflow_run_artifact.props.name"),
-      ellipsis: true,
       render: (_, record) => {
         return (
-          <Typography.Text delete={!!record.deleted} ellipsis>
-            {record.subjectAltNames}
-          </Typography.Text>
+          <div className="max-w-full truncate">
+            <Typography.Text delete={!!record.deleted} ellipsis>
+              {record.subjectAltNames}
+            </Typography.Text>
+          </div>
         );
       },
     },
     {
       key: "$action",
       align: "end",
-      width: 120,
+      width: 32,
       render: (_, record) => (
-        <Space.Compact>
+        <div className="flex items-center justify-end">
           <CertificateDetailDrawer
             data={record}
             trigger={
-              <Tooltip title={t("certificate.action.view")}>
-                <Button color="primary" disabled={!!record.deleted} icon={<SelectOutlinedIcon />} variant="text" />
+              <Tooltip title={t("common.button.view")}>
+                <Button color="primary" disabled={!!record.deleted} icon={<IconBrowserShare size="1.25em" />} variant="text" />
               </Tooltip>
             }
           />
-        </Space.Compact>
+        </div>
       ),
     },
   ];
   const [tableData, setTableData] = useState<CertificateModel[]>([]);
-  const { loading: tableLoading } = useRequest(
+  const { loading } = useRequest(
     () => {
       return listCertificatesByWorkflowRunId(runId);
     },
@@ -362,7 +439,7 @@ const WorkflowRunArtifacts = ({ runId }: { runId: string }) => {
         }
 
         console.error(err);
-        notificationApi.error({ message: t("common.text.request_error"), description: getErrMsg(err) });
+        notification.error({ title: t("common.text.request_error"), description: getErrMsg(err) });
 
         throw err;
       },
@@ -370,22 +447,17 @@ const WorkflowRunArtifacts = ({ runId }: { runId: string }) => {
   );
 
   return (
-    <>
-      {NotificationContextHolder}
-
-      <Typography.Title level={5}>{t("workflow_run.artifacts")}</Typography.Title>
-      <Table<CertificateModel>
-        columns={tableColumns}
-        dataSource={tableData}
-        loading={tableLoading}
-        locale={{
-          emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />,
-        }}
-        pagination={false}
-        rowKey={(record) => record.id}
-        size="small"
-      />
-    </>
+    <Table<CertificateModel>
+      columns={tableColumns}
+      dataSource={tableData}
+      loading={loading}
+      locale={{
+        emptyText: <Empty description={t("common.text.nodata")} image={Empty.PRESENTED_IMAGE_SIMPLE} />,
+      }}
+      pagination={false}
+      rowKey={(record) => record.id}
+      size="small"
+    />
   );
 };
 

@@ -1,8 +1,8 @@
 ﻿import { type ChangeEvent, useEffect } from "react";
-import { FormOutlined as FormOutlinedIcon } from "@ant-design/icons";
-import { nanoid } from "@ant-design/pro-components";
+import { IconList } from "@tabler/icons-react";
 import { useControllableValue } from "ahooks";
 import { Button, Form, Input, type InputProps, Space } from "antd";
+import { nanoid } from "nanoid/non-secure";
 
 import { useAntdForm } from "@/hooks";
 import ModalForm from "./ModalForm";
@@ -10,34 +10,35 @@ import MultipleInput from "./MultipleInput";
 
 type SplitOptions = {
   removeEmpty?: boolean;
-  trim?: boolean;
+  trimSpace?: boolean;
 };
 
-export type MultipleSplitValueInputProps = Omit<InputProps, "count" | "defaultValue" | "showCount" | "value" | "onChange"> & {
+export interface MultipleSplitValueInputProps extends Omit<InputProps, "count" | "defaultValue" | "showCount" | "value" | "onChange"> {
   defaultValue?: string;
   maxCount?: number;
   minCount?: number;
-  modalTitle?: string;
-  modalWidth?: number;
+  modalTitle?: React.ReactNode;
+  modalWidth?: number | string;
   placeholderInModal?: string;
   showSortButton?: boolean;
   separator?: string;
   splitOptions?: SplitOptions;
   value?: string[];
   onChange?: (value: string) => void;
-};
+}
 
 const DEFAULT_SEPARATOR = ";";
 
 const MultipleSplitValueInput = ({
   className,
   style,
+  size,
   separator: delimiter = DEFAULT_SEPARATOR,
   disabled,
   maxCount,
   minCount,
   modalTitle,
-  modalWidth = 480,
+  modalWidth = "480px",
   placeholder,
   placeholderInModal,
   showSortButton = true,
@@ -55,8 +56,8 @@ const MultipleSplitValueInput = ({
     name: "componentMultipleSplitValueInput_" + nanoid(),
     initialValues: { value: value?.split(delimiter) },
     onSubmit: (values) => {
-      const temp = values.value ?? [];
-      if (splitOptions.trim) {
+      const temp = (values.value ?? []) as string[];
+      if (splitOptions.trimSpace) {
         temp.map((e) => e.trim());
       }
       if (splitOptions.removeEmpty) {
@@ -81,27 +82,29 @@ const MultipleSplitValueInput = ({
   };
 
   return (
-    <Space.Compact className={className} style={{ width: "100%", ...style }}>
-      <Input {...props} disabled={disabled} placeholder={placeholder} value={value} onChange={handleChange} onClear={handleClear} />
-      <ModalForm
-        {...formProps}
-        layout="vertical"
-        form={formInst}
-        modalProps={{ destroyOnHidden: true }}
-        title={modalTitle}
-        trigger={
-          <Button disabled={disabled}>
-            <FormOutlinedIcon />
-          </Button>
-        }
-        validateTrigger="onSubmit"
-        width={modalWidth}
-      >
-        <Form.Item name="value" noStyle>
-          <MultipleInput minCount={minCount} maxCount={maxCount} placeholder={placeholderInModal ?? placeholder} showSortButton={showSortButton} />
-        </Form.Item>
-      </ModalForm>
-    </Space.Compact>
+    <div className={className} style={style}>
+      <Space.Compact className="w-full">
+        <Input {...props} disabled={disabled} placeholder={placeholder} size={size} value={value} onChange={handleChange} onClear={handleClear} />
+        <ModalForm
+          {...formProps}
+          layout="vertical"
+          form={formInst}
+          modalProps={{ destroyOnHidden: true }}
+          title={modalTitle}
+          trigger={
+            <Button className="px-2" disabled={disabled} size={size}>
+              <IconList size="1.25em" />
+            </Button>
+          }
+          validateTrigger="onSubmit"
+          width={modalWidth}
+        >
+          <Form.Item name="value" noStyle>
+            <MultipleInput minCount={minCount} maxCount={maxCount} placeholder={placeholderInModal ?? placeholder} showSortButton={showSortButton} />
+          </Form.Item>
+        </ModalForm>
+      </Space.Compact>
+    </div>
   );
 };
 

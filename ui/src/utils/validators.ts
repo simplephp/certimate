@@ -1,4 +1,4 @@
-﻿import { z } from "zod/v4";
+﻿import { z } from "zod/mini";
 
 import { validCronExpression as _validCronExpression } from "./cron";
 
@@ -7,35 +7,22 @@ export const validCronExpression = (value: string) => {
 };
 
 export const validDomainName = (value: string, { allowWildcard = false }: { allowWildcard?: boolean } = {}) => {
-  const re = allowWildcard ? /^(?:\*\.)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{1,}$/ : /^(?!-)[A-Za-z0-9-]{1,}(?<!-)(\.[A-Za-z0-9-]{1,}(?<!-)){0,}$/;
+  const re = allowWildcard
+    ? /^(?:\*\.)?(?!-)[A-Za-z0-9-]{1,}(?<!-)(\.[A-Za-z0-9-]{1,}(?<!-)){0,}$/
+    : /^(?!-)[A-Za-z0-9-]{1,}(?<!-)(\.[A-Za-z0-9-]{1,}(?<!-)){0,}$/;
   return re.test(value);
 };
 
 export const validEmailAddress = (value: string) => {
-  try {
-    z.email().parse(value);
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return z.email().safeParse(value).success;
 };
 
 export const validIPv4Address = (value: string) => {
-  try {
-    z.ipv4().parse(value);
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return z.ipv4().safeParse(value).success;
 };
 
 export const validIPv6Address = (value: string) => {
-  try {
-    z.ipv6().parse(value);
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return z.ipv6().safeParse(value).success;
 };
 
 export const validHttpOrHttpsUrl = (value: string) => {

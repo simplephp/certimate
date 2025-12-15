@@ -1,44 +1,55 @@
-import { memo, useEffect, useState } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Avatar, Select, type SelectProps, Space, Typography, theme } from "antd";
+import { Avatar, Select, Typography, theme } from "antd";
 
 import { type ACMEDns01Provider, acmeDns01ProvidersMap } from "@/domain/provider";
 
-export type ACMEDns01ProviderSelectProps = Omit<
-  SelectProps,
-  "filterOption" | "filterSort" | "labelRender" | "options" | "optionFilterProp" | "optionLabelProp" | "optionRender"
-> & {
-  filter?: (record: ACMEDns01Provider) => boolean;
-};
+import { type SharedSelectProps, useSelectDataSource } from "./_shared";
 
-const ACMEDns01ProviderSelect = ({ filter, ...props }: ACMEDns01ProviderSelectProps) => {
+export interface ACMEDns01ProviderSelectProps extends SharedSelectProps<ACMEDns01Provider> {
+  showAvailability?: boolean;
+}
+
+const ACMEDns01ProviderSelect = ({ showAvailability, onFilter, ...props }: ACMEDns01ProviderSelectProps) => {
   const { t } = useTranslation();
 
   const { token: themeToken } = theme.useToken();
 
-  const [options, setOptions] = useState<Array<{ key: string; value: string; label: string; data: ACMEDns01Provider }>>([]);
-  useEffect(() => {
-    const allItems = Array.from(acmeDns01ProvidersMap.values());
-    const filteredItems = filter != null ? allItems.filter(filter) : allItems;
-    setOptions(
-      filteredItems.map((item) => ({
-        key: item.type,
-        value: item.type,
-        label: t(item.name),
-        data: item,
-      }))
-    );
-  }, [filter]);
+  const dataSources = useSelectDataSource({
+    dataSource: Array.from(acmeDns01ProvidersMap.values()),
+    filters: [onFilter!],
+  });
+  const options = useMemo(() => {
+    const convert = (providers: ACMEDns01Provider[]): Array<{ key: string; value: string; label: string; data: ACMEDns01Provider }> => {
+      return providers.map((provider) => ({
+        key: provider.type,
+        value: provider.type,
+        label: t(provider.name),
+        data: provider,
+      }));
+    };
+
+    return showAvailability
+      ? [
+          {
+            label: t("provider.text.available_group"),
+            options: convert(dataSources.available),
+          },
+          {
+            label: t("provider.text.unavailable_group"),
+            options: convert(dataSources.unavailable),
+          },
+        ].filter((group) => group.options.length > 0)
+      : convert(dataSources.filtered);
+  }, [showAvailability, dataSources]);
 
   const renderOption = (key: string) => {
     const provider = acmeDns01ProvidersMap.get(key);
     return (
-      <Space className="max-w-full grow overflow-hidden truncate" size={4}>
+      <div className="flex items-center gap-2 truncate overflow-hidden">
         <Avatar shape="square" src={provider?.icon} size="small" />
-        <Typography.Text className="leading-loose" ellipsis>
-          {t(provider?.name ?? "")}
-        </Typography.Text>
-      </Space>
+        <Typography.Text ellipsis>{t(provider?.name ?? "")}</Typography.Text>
+      </div>
     );
   };
 
@@ -47,9 +58,11 @@ const ACMEDns01ProviderSelect = ({ filter, ...props }: ACMEDns01ProviderSelectPr
       {...props}
       filterOption={(inputValue, option) => {
         if (!option) return false;
+        if (!option.label) return false;
+        if (!option.value) return false;
 
         const value = inputValue.toLowerCase();
-        return option.value.toLowerCase().includes(value) || option.label.toLowerCase().includes(value);
+        return String(option.value).toLowerCase().includes(value) || String(option.label).toLowerCase().includes(value);
       }}
       labelRender={({ value }) => {
         if (value != null) {
@@ -59,11 +72,11 @@ const ACMEDns01ProviderSelect = ({ filter, ...props }: ACMEDns01ProviderSelectPr
         return <span style={{ color: themeToken.colorTextPlaceholder }}>{props.placeholder}</span>;
       }}
       options={options}
-      optionFilterProp={undefined}
-      optionLabelProp={undefined}
-      optionRender={(option) => renderOption(option.data.value)}
+      optionFilterProp={void 0}
+      optionLabelProp={void 0}
+      optionRender={(option) => renderOption(option.data.value as string)}
     />
   );
 };
 
-export default memo(ACMEDns01ProviderSelect);
+export default ACMEDns01ProviderSelect;

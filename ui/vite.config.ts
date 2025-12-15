@@ -1,6 +1,7 @@
 import { type SpawnSyncReturns, execFileSync } from "node:child_process";
 import path from "node:path";
 
+import tailwindcssPlugin from "@tailwindcss/vite";
 import legacyPlugin from "@vitejs/plugin-legacy";
 import reactPlugin from "@vitejs/plugin-react";
 import fs from "fs-extra";
@@ -14,7 +15,7 @@ const preserveFilesPlugin = (filesToPreserve: string[]): Plugin => {
       // 在构建开始时将要保留的文件或目录移动到临时位置
       filesToPreserve.forEach((file) => {
         const srcPath = path.resolve(__dirname, file);
-        const tempPath = path.resolve(__dirname, `node_modules`, `.tmp`, `build_${file}`);
+        const tempPath = path.resolve(__dirname, `node_modules/.tmp/build/${file}`);
         if (fs.existsSync(srcPath)) {
           fs.moveSync(srcPath, tempPath, { overwrite: true });
         }
@@ -24,7 +25,7 @@ const preserveFilesPlugin = (filesToPreserve: string[]): Plugin => {
       // 在构建完成后将临时位置的文件或目录移回原来的位置
       filesToPreserve.forEach((file) => {
         const srcPath = path.resolve(__dirname, file);
-        const tempPath = path.resolve(__dirname, `node_modules`, `.tmp`, `build_${file}`);
+        const tempPath = path.resolve(__dirname, `node_modules/.tmp/build/${file}`);
         if (fs.existsSync(tempPath)) {
           fs.moveSync(tempPath, srcPath, { overwrite: true });
         }
@@ -43,7 +44,7 @@ export default defineConfig(({ mode }) => {
       })?.toString();
     } catch (error) {
       const err = error as SpawnSyncReturns<Buffer>;
-      console.warn("[Warn] failed to get version number through git", err?.stderr?.toString());
+      console.warn("failed to get version number through git", err?.stderr?.toString());
     }
   }
 
@@ -51,11 +52,28 @@ export default defineConfig(({ mode }) => {
     define: {
       __APP_VERSION__: JSON.stringify(appVersion),
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes("/src/i18n/")) {
+              return "locales";
+            }
+          },
+        },
+      },
+    },
     plugins: [
       reactPlugin({}),
       legacyPlugin({
         targets: ["defaults", "not IE 11"],
+        modernTargets: "chrome>=111, firefox>=113, safari>=15.4",
+        polyfills: true,
+        modernPolyfills: true,
+        renderLegacyChunks: false,
+        renderModernChunks: true,
       }),
+      tailwindcssPlugin(),
       preserveFilesPlugin(["dist/.gitkeep"]),
     ],
     resolve: {

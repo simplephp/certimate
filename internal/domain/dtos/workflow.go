@@ -7,7 +7,19 @@ type WorkflowStartRunReq struct {
 	RunTrigger domain.WorkflowTriggerType `json:"trigger"`
 }
 
+type WorkflowStartRunResp struct {
+	RunId string `json:"runId"`
+}
+
 type WorkflowCancelRunReq struct {
 	WorkflowId string `json:"-"`
 	RunId      string `json:"-"`
+}
+
+type WorkflowCancelRunResp struct{}
+
+type WorkflowStatisticsResp struct {
+	Concurrency      int      `json:"concurrency"`
+	PendingRunIds    []string `json:"pendingRunIds"`
+	ProcessingRunIds []string `json:"processingRunIds"`
 }

@@ -14,10 +14,10 @@ import (
 
 	"github.com/go-resty/resty/v2"
 
-	"github.com/certimate-go/certimate/pkg/core"
+	"github.com/certimate-go/certimate/pkg/core/notifier"
 )
 
-type NotifierProviderConfig struct {
+type NotifierConfig struct {
 	// Webhook URL。
 	WebhookUrl string `json:"webhookUrl"`
 	// Webhook 回调数据（application/json 或 application/x-www-form-urlencoded 格式）。
@@ -27,19 +27,22 @@ type NotifierProviderConfig struct {
 	Method string `json:"method,omitempty"`
 	// 请求标头。
 	Headers map[string]string `json:"headers,omitempty"`
+	// 请求超时（单位：秒）。
+	// 零值时默认值 30。
+	Timeout int `json:"timeout,omitempty"`
 	// 是否允许不安全的连接。
 	AllowInsecureConnections bool `json:"allowInsecureConnections,omitempty"`
 }
 
-type NotifierProvider struct {
-	config     *NotifierProviderConfig
+type Notifier struct {
+	config     *NotifierConfig
 	logger     *slog.Logger
 	httpClient *resty.Client
 }
 
-var _ core.Notifier = (*NotifierProvider)(nil)
+var _ notifier.Provider = (*Notifier)(nil)
 
-func NewNotifierProvider(config *NotifierProviderConfig) (*NotifierProvider, error) {
+func NewNotifier(config *NotifierConfig) (*Notifier, error) {
 	if config == nil {
 		return nil, errors.New("the configuration of the notifier provider is nil")
 	}
@@ -48,18 +51,21 @@ func NewNotifierProvider(config *NotifierProviderConfig) (*NotifierProvider, err
 		SetTimeout(30 * time.Second).
 		SetRetryCount(3).
 		SetRetryWaitTime(5 * time.Second)
+	if config.Timeout > 0 {
+		client.SetTimeout(time.Duration(config.Timeout) * time.Second)
+	}
 	if config.AllowInsecureConnections {
 		client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true})
 	}
 
-	return &NotifierProvider{
+	return &Notifier{
 		config:     config,
 		logger:     slog.Default(),
 		httpClient: client,
 	}, nil
 }
 
-func (n *NotifierProvider) SetLogger(logger *slog.Logger) {
+func (n *Notifier) SetLogger(logger *slog.Logger) {
 	if logger == nil {
 		n.logger = slog.New(slog.DiscardHandler)
 	} else {
@@ -67,7 +73,7 @@ func (n *NotifierProvider) SetLogger(logger *slog.Logger) {
 	}
 }
 
-func (n *NotifierProvider) Notify(ctx context.Context, subject string, message string) (*core.NotifyResult, error) {
+func (n *Notifier) Notify(ctx context.Context, subject string, message string) (*notifier.NotifyResult, error) {
 	// 处理 Webhook URL
 	webhookUrl, err := url.Parse(n.config.WebhookUrl)
 	if err != nil {
@@ -121,9 +127,6 @@ func (n *NotifierProvider) Notify(ctx context.Context, subject string, message s
 			return nil, fmt.Errorf("failed to unmarshal webhook data: %w", err)
 		}
 
-		replaceJsonValueRecursively(webhookData, "${SUBJECT}", subject)
-		replaceJsonValueRecursively(webhookData, "${MESSAGE}", message)
-
 		if webhookMethod == http.MethodGet || webhookContentType == CONTENT_TYPE_FORM || webhookContentType == CONTENT_TYPE_MULTIPART {
 			temp := make(map[string]string)
 			jsonb, err := json.Marshal(webhookData)
@@ -136,6 +139,14 @@ func (n *NotifierProvider) Notify(ctx context.Context, subject string, message s
 			}
 		}
 	}
+
+	// 替换变量值
+	replaceJsonValueRecursively(webhookData, "${CERTIMATE_NOTIFIER_SUBJECT}", subject)
+	replaceJsonValueRecursively(webhookData, "${CERTIMATE_NOTIFIER_MESSAGE}", message)
+
+	// 兼容旧版变量
+	replaceJsonValueRecursively(webhookData, "${SUBJECT}", subject)
+	replaceJsonValueRecursively(webhookData, "${MESSAGE}", message)
 
 	// 生成请求
 	// 其中 GET 请求需转换为查询参数
@@ -165,7 +176,7 @@ func (n *NotifierProvider) Notify(ctx context.Context, subject string, message s
 
 	n.logger.Debug("webhook responded", slog.String("response", resp.String()))
 
-	return &core.NotifyResult{}, nil
+	return &notifier.NotifyResult{}, nil
 }
 
 func replaceJsonValueRecursively(data interface{}, oldStr, newStr string) interface{} {

@@ -1,45 +1,64 @@
 package domain
 
 import (
-	"encoding/json"
-	"fmt"
+	xmaps "github.com/certimate-go/certimate/pkg/utils/maps"
 )
 
 const CollectionNameSettings = "settings"
 
 type Settings struct {
 	Meta
-	Name    string `json:"name" db:"name"`
-	Content string `json:"content" db:"content"`
+	Name    string          `json:"name" db:"name"`
+	Content SettingsContent `json:"content" db:"content"`
 }
 
-// Deprecated: v0.4.x 将废弃
-type NotifyTemplatesSettingsContent struct {
-	NotifyTemplates []struct {
-		Subject string `json:"subject"`
-		Message string `json:"message"`
-	} `json:"notifyTemplates"`
+const (
+	SettingsNameEmails               = "emails"
+	SettingsNameNotificationTemplate = "notifyTemplate"
+	SettingsNameScriptTemplate       = "scriptTemplate"
+	SettingsNameSSLProvider          = "sslProvider"
+	SettingsNamePersistence          = "persistence"
+)
+
+type SettingsContent map[string]any
+
+type SettingsContentForSSLProvider struct {
+	Provider CAProviderType                    `json:"provider"`
+	Config   map[CAProviderType]map[string]any `json:"config"`
 }
 
-// Deprecated: v0.4.x 将废弃
-type NotifyChannelsSettingsContent map[string]map[string]any
+type SettingsContentForPersistence struct {
+	CertificatesWarningDaysBeforeExpire int `json:"certificatesWarningDaysBeforeExpire"`
+	CertificatesRetentionMaxDays        int `json:"certificatesRetentionMaxDays"`
+	WorkflowRunsRetentionMaxDays        int `json:"workflowRunsRetentionMaxDays"`
+}
 
-// Deprecated: v0.4.x 将废弃
-func (s *Settings) GetNotifyChannelConfig(channel string) (map[string]any, error) {
-	conf := &NotifyChannelsSettingsContent{}
-	if err := json.Unmarshal([]byte(s.Content), conf); err != nil {
-		return nil, err
+func (c SettingsContent) AsSSLProvider() *SettingsContentForSSLProvider {
+	content := &SettingsContentForSSLProvider{}
+	xmaps.Populate(c, content)
+
+	if content.Provider == "" {
+		content.Provider = CAProviderTypeLetsEncrypt
 	}
 
-	v, ok := (*conf)[channel]
-	if !ok {
-		return nil, fmt.Errorf("channel \"%s\" not found", channel)
-	}
-
-	return v, nil
+	return content
 }
 
-type PersistenceSettingsContent struct {
-	WorkflowRunsMaxDaysRetention        int `json:"workflowRunsMaxDaysRetention"`
-	ExpiredCertificatesMaxDaysRetention int `json:"expiredCertificatesMaxDaysRetention"`
+func (c SettingsContent) AsPersistence() *SettingsContentForPersistence {
+	content := &SettingsContentForPersistence{}
+	xmaps.Populate(c, content)
+
+	if content.CertificatesWarningDaysBeforeExpire <= 0 {
+		content.CertificatesWarningDaysBeforeExpire = 21
+	}
+
+	if content.CertificatesRetentionMaxDays < 0 {
+		content.CertificatesRetentionMaxDays = 0
+	}
+
+	if content.WorkflowRunsRetentionMaxDays < 0 {
+		content.WorkflowRunsRetentionMaxDays = 0
+	}
+
+	return content
 }

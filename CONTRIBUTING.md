@@ -1,5 +1,11 @@
 # 贡献指南
 
+<div align="center">
+
+中文 ｜ [English](CONTRIBUTING_EN.md)
+
+</div>
+
 非常感谢你抽出时间来帮助改进 Certimate！以下是向 Certimate 提交 Pull Request 时的操作指南。
 
 我们需要保持敏捷和快速迭代，同时也希望确保贡献者能获得尽可能流畅的参与体验。这份贡献指南旨在帮助你熟悉代码库和我们的工作方式，让你可以尽快进入有趣的开发环节。
@@ -21,7 +27,7 @@
 ### 要求
 
 - Go 1.24+（用于修改后端代码）
-- Node.js 22.0+（用于修改前端代码）
+- Node.js 22.12+（用于修改前端代码）
 
 ### 后端代码
 
@@ -74,7 +80,7 @@ npm run build
 
 **在向主仓库提交 PR 之前，你应该：**
 
-- 使用 [ESLint](https://github.com/eslint/eslint) 格式化你的代码。推荐使用 VSCode，并安装 ESLint+Prettier 插件，以便在保存时自动格式化。
+- 使用 [ESLint](https://github.com/eslint/eslint) 格式化你的代码。推荐使用 VSCode，并安装 ESLint 插件，以便在保存时自动格式化。
 
 ## 提交 PR
 
@@ -87,7 +93,7 @@ npm run build
 
 ### 提交流程
 
-1. Fork 本仓库；
+1. Fork 本仓库并签出到 `main` 分支；
 2. 在提交 PR 之前，请先发起 Issue 讨论你想要做的修改；
 3. 为你的修改创建一个新的分支；
 4. 请为你的修改添加相应的测试；

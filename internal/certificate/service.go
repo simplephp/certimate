@@ -4,98 +4,51 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/json"
+	"crypto/x509"
+	"errors"
 	"fmt"
-	"strconv"
+	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/pocketbase/dbx"
 
 	"github.com/certimate-go/certimate/internal/app"
+	"github.com/certimate-go/certimate/internal/certacme"
 	"github.com/certimate-go/certimate/internal/domain"
 	"github.com/certimate-go/certimate/internal/domain/dtos"
-	"github.com/certimate-go/certimate/internal/notify"
-	"github.com/certimate-go/certimate/internal/repository"
 	xcert "github.com/certimate-go/certimate/pkg/utils/cert"
+	xcryptokey "github.com/certimate-go/certimate/pkg/utils/crypto/key"
 )
-
-const (
-	defaultExpireSubject = "有 ${COUNT} 张证书即将过期"
-	defaultExpireMessage = "有 ${COUNT} 张证书即将过期，域名分别为 ${DOMAINS}，请保持关注！"
-)
-
-type certificateRepository interface {
-	ListExpireSoon(ctx context.Context) ([]*domain.Certificate, error)
-	GetById(ctx context.Context, id string) (*domain.Certificate, error)
-	DeleteWhere(ctx context.Context, exprs ...dbx.Expression) (int, error)
-}
-
-type settingsRepository interface {
-	GetByName(ctx context.Context, name string) (*domain.Settings, error)
-}
 
 type CertificateService struct {
+	acmeAccountRepo acmeAccountRepository
 	certificateRepo certificateRepository
 	settingsRepo    settingsRepository
 }
 
-func NewCertificateService(certificateRepo certificateRepository, settingsRepo settingsRepository) *CertificateService {
+func NewCertificateService(
+	acmeAccountRepo acmeAccountRepository,
+	certificateRepo certificateRepository,
+	settingsRepo settingsRepository,
+) *CertificateService {
 	return &CertificateService{
+		acmeAccountRepo: acmeAccountRepo,
 		certificateRepo: certificateRepo,
 		settingsRepo:    settingsRepo,
 	}
 }
 
 func (s *CertificateService) InitSchedule(ctx context.Context) error {
-	// 每日发送过期证书提醒
-	app.GetScheduler().MustAdd("certificateExpireSoonNotify", "0 0 * * *", func() {
-		certificates, err := s.certificateRepo.ListExpireSoon(context.Background())
-		if err != nil {
-			app.GetLogger().Error("failed to get certificates which expire soon", "err", err)
-			return
-		}
-
-		notification := buildExpireSoonNotification(certificates)
-		if notification == nil {
-			return
-		}
-
-		if err := notify.SendToAllChannels(notification.Subject, notification.Message); err != nil {
-			app.GetLogger().Error("failed to send notification", "err", err)
-		}
-	})
-
 	// 每日清理过期证书
-	app.GetScheduler().MustAdd("certificateExpiredCleanup", "0 0 * * *", func() {
-		settings, err := s.settingsRepo.GetByName(ctx, "persistence")
-		if err != nil {
-			app.GetLogger().Error("failed to get persistence settings", "err", err)
-			return
-		}
-
-		var settingsContent *domain.PersistenceSettingsContent
-		json.Unmarshal([]byte(settings.Content), &settingsContent)
-		if settingsContent != nil && settingsContent.ExpiredCertificatesMaxDaysRetention != 0 {
-			ret, err := s.certificateRepo.DeleteWhere(
-				context.Background(),
-				dbx.NewExp(fmt.Sprintf("expireAt<DATETIME('now', '-%d days')", settingsContent.ExpiredCertificatesMaxDaysRetention)),
-			)
-			if err != nil {
-				app.GetLogger().Error("failed to delete expired certificates", "err", err)
-			}
-
-			if ret > 0 {
-				app.GetLogger().Info(fmt.Sprintf("cleanup %d expired certificates", ret))
-			}
-		}
+	app.GetScheduler().MustAdd("cleanupCertificateExpired", "0 0 * * *", func() {
+		s.cleanupExpiredCertificates(context.Background())
 	})
 
 	return nil
 }
 
-func (s *CertificateService) ArchiveFile(ctx context.Context, req *dtos.CertificateArchiveFileReq) (*dtos.CertificateArchiveFileResp, error) {
+func (s *CertificateService) DownloadArchivedFile(ctx context.Context, req *dtos.CertificateArchiveFileReq) (*dtos.CertificateArchiveFileResp, error) {
 	certificate, err := s.certificateRepo.GetById(ctx, req.CertificateId)
 	if err != nil {
 		return nil, err
@@ -222,11 +175,54 @@ func (s *CertificateService) ArchiveFile(ctx context.Context, req *dtos.Certific
 	}
 }
 
+func (s *CertificateService) RevokeCertificate(ctx context.Context, req *dtos.CertificateRevokeReq) (*dtos.CertificateRevokeResp, error) {
+	certificate, err := s.certificateRepo.GetById(ctx, req.CertificateId)
+	if err != nil {
+		return nil, err
+	}
+
+	if certificate.ACMEAcctUrl == "" || certificate.ACMECertUrl == "" {
+		return nil, fmt.Errorf("could not revoke a certificate which is not issued in Certimate")
+	}
+	// if certificate.ValidityNotAfter.Before(time.Now()) {
+	// 	return nil, fmt.Errorf("could not revoke a certificate which is expired")
+	// }
+	if certificate.IsRevoked {
+		return nil, fmt.Errorf("could not revoke a certificate which is already revoked")
+	}
+
+	acmeAccount, err := s.acmeAccountRepo.GetByAcctUrl(ctx, certificate.ACMEAcctUrl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to revoke certificate: could not find acme account: %w", err)
+	}
+
+	legoClient, err := certacme.NewACMEClientWithAccount(acmeAccount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to revoke certificate: could not initialize acme config: %w", err)
+	}
+
+	revokeReq := &certacme.RevokeCertificateRequest{
+		Certificate: certificate.Certificate,
+	}
+	_, err = legoClient.RevokeCertificate(ctx, revokeReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to revoke certificate: %w", err)
+	}
+
+	certificate.IsRevoked = true
+	certificate, err = s.certificateRepo.Save(ctx, certificate)
+	if err != nil {
+		return nil, err
+	}
+
+	return &dtos.CertificateRevokeResp{}, nil
+}
+
 func (s *CertificateService) ValidateCertificate(ctx context.Context, req *dtos.CertificateValidateCertificateReq) (*dtos.CertificateValidateCertificateResp, error) {
 	certX509, err := xcert.ParseCertificateFromPEM(req.Certificate)
 	if err != nil {
 		return nil, err
-	} else if time.Now().After(certX509.NotAfter) {
+	} else if certX509.NotAfter.Before(time.Now()) {
 		return nil, fmt.Errorf("certificate has expired at %s", certX509.NotAfter.UTC().Format(time.RFC3339))
 	}
 
@@ -237,56 +233,54 @@ func (s *CertificateService) ValidateCertificate(ctx context.Context, req *dtos.
 }
 
 func (s *CertificateService) ValidatePrivateKey(ctx context.Context, req *dtos.CertificateValidatePrivateKeyReq) (*dtos.CertificateValidatePrivateKeyResp, error) {
-	_, err := certcrypto.ParsePEMPrivateKey([]byte(req.PrivateKey))
+	privkey, err := xcert.ParsePrivateKeyFromPEM(req.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
 
+	var keyAlgorithm string
+	privkeyAlg, privkeySize, _ := xcryptokey.GetPrivateKeyAlgorithm(privkey)
+	switch privkeyAlg {
+	case x509.RSA:
+		keyAlgorithm = fmt.Sprintf("RSA%d", privkeySize)
+	case x509.ECDSA:
+		keyAlgorithm = fmt.Sprintf("EC%d", privkeySize)
+	case x509.Ed25519:
+		keyAlgorithm = "Ed25519"
+	}
+
 	return &dtos.CertificateValidatePrivateKeyResp{
-		IsValid: true,
+		IsValid:      true,
+		KeyAlgorithm: keyAlgorithm,
 	}, nil
 }
 
-func buildExpireSoonNotification(certificates []*domain.Certificate) *struct {
-	Subject string
-	Message string
-} {
-	if len(certificates) == 0 {
-		return nil
+func (s *CertificateService) cleanupExpiredCertificates(ctx context.Context) error {
+	settings, err := s.settingsRepo.GetByName(ctx, domain.SettingsNamePersistence)
+	if err != nil {
+		if errors.Is(err, domain.ErrRecordNotFound) {
+			return nil
+		}
+
+		app.GetLogger().Error("failed to get persistence settings", slog.Any("error", err))
+		return err
 	}
 
-	subject := defaultExpireSubject
-	message := defaultExpireMessage
+	persistenceSettings := settings.Content.AsPersistence()
+	if persistenceSettings.CertificatesRetentionMaxDays != 0 {
+		ret, err := s.certificateRepo.DeleteWhere(
+			context.Background(),
+			dbx.NewExp(fmt.Sprintf("validityNotAfter<DATETIME('now', '-%d days')", persistenceSettings.CertificatesRetentionMaxDays)),
+		)
+		if err != nil {
+			app.GetLogger().Error("failed to delete expired certificates", slog.Any("error", err))
+			return err
+		}
 
-	// 查询模板信息
-	settingsRepo := repository.NewSettingsRepository()
-	settings, err := settingsRepo.GetByName(context.Background(), "notifyTemplates")
-	if err == nil {
-		var templates *domain.NotifyTemplatesSettingsContent
-		json.Unmarshal([]byte(settings.Content), &templates)
-
-		if templates != nil && len(templates.NotifyTemplates) > 0 {
-			subject = templates.NotifyTemplates[0].Subject
-			message = templates.NotifyTemplates[0].Message
+		if ret > 0 {
+			app.GetLogger().Info(fmt.Sprintf("cleanup %d expired certificates", ret))
 		}
 	}
 
-	// 替换变量
-	count := len(certificates)
-	domains := make([]string, count)
-	for i, record := range certificates {
-		domains[i] = record.SubjectAltNames
-	}
-	countStr := strconv.Itoa(count)
-	domainStr := strings.Join(domains, ";")
-	subject = strings.ReplaceAll(subject, "${COUNT}", countStr)
-	subject = strings.ReplaceAll(subject, "${DOMAINS}", domainStr)
-	message = strings.ReplaceAll(message, "${COUNT}", countStr)
-	message = strings.ReplaceAll(message, "${DOMAINS}", domainStr)
-
-	// 返回消息
-	return &struct {
-		Subject string
-		Message string
-	}{Subject: subject, Message: message}
+	return nil
 }

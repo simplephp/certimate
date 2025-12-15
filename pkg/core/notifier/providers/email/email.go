@@ -2,19 +2,18 @@ package email
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
+	"fmt"
 	"log/slog"
-	"net"
-	"net/smtp"
-	"strconv"
+	"time"
 
-	"github.com/domodwyer/mailyak/v3"
+	"github.com/wneessen/go-mail"
 
-	"github.com/certimate-go/certimate/pkg/core"
+	"github.com/certimate-go/certimate/pkg/core/notifier"
+	xtls "github.com/certimate-go/certimate/pkg/utils/tls"
 )
 
-type NotifierProviderConfig struct {
+type NotifierConfig struct {
 	// SMTP 服务器地址。
 	SmtpHost string `json:"smtpHost"`
 	// SMTP 服务器端口。
@@ -32,27 +31,29 @@ type NotifierProviderConfig struct {
 	SenderName string `json:"senderName,omitempty"`
 	// 收件人邮箱。
 	ReceiverAddress string `json:"receiverAddress"`
+	// 是否允许不安全的连接。
+	AllowInsecureConnections bool `json:"allowInsecureConnections,omitempty"`
 }
 
-type NotifierProvider struct {
-	config *NotifierProviderConfig
+type Notifier struct {
+	config *NotifierConfig
 	logger *slog.Logger
 }
 
-var _ core.Notifier = (*NotifierProvider)(nil)
+var _ notifier.Provider = (*Notifier)(nil)
 
-func NewNotifierProvider(config *NotifierProviderConfig) (*NotifierProvider, error) {
+func NewNotifier(config *NotifierConfig) (*Notifier, error) {
 	if config == nil {
 		return nil, errors.New("the configuration of the notifier provider is nil")
 	}
 
-	return &NotifierProvider{
+	return &Notifier{
 		config: config,
 		logger: slog.Default(),
 	}, nil
 }
 
-func (n *NotifierProvider) SetLogger(logger *slog.Logger) {
+func (n *Notifier) SetLogger(logger *slog.Logger) {
 	if logger == nil {
 		n.logger = slog.New(slog.DiscardHandler)
 	} else {
@@ -60,59 +61,73 @@ func (n *NotifierProvider) SetLogger(logger *slog.Logger) {
 	}
 }
 
-func (n *NotifierProvider) Notify(ctx context.Context, subject string, message string) (*core.NotifyResult, error) {
-	var smtpAuth smtp.Auth
-	if n.config.Username != "" || n.config.Password != "" {
-		smtpAuth = smtp.PlainAuth("", n.config.Username, n.config.Password, n.config.SmtpHost)
+func (n *Notifier) Notify(ctx context.Context, subject string, message string) (*notifier.NotifyResult, error) {
+	clientOptions := []mail.Option{
+		mail.WithSMTPAuth(mail.SMTPAuthAutoDiscover),
+		mail.WithUsername(n.config.Username),
+		mail.WithPassword(n.config.Password),
+		mail.WithTimeout(time.Second * 30),
 	}
 
-	var smtpAddr string
 	if n.config.SmtpPort == 0 {
 		if n.config.SmtpTls {
-			smtpAddr = net.JoinHostPort(n.config.SmtpHost, "465")
+			clientOptions = append(clientOptions, mail.WithPort(mail.DefaultPortSSL))
 		} else {
-			smtpAddr = net.JoinHostPort(n.config.SmtpHost, "25")
+			clientOptions = append(clientOptions, mail.WithPort(mail.DefaultPort))
 		}
 	} else {
-		smtpAddr = net.JoinHostPort(n.config.SmtpHost, strconv.Itoa(int(n.config.SmtpPort)))
+		clientOptions = append(clientOptions, mail.WithPort(int(n.config.SmtpPort)))
 	}
 
-	var yak *mailyak.MailYak
 	if n.config.SmtpTls {
-		yakWithTls, err := mailyak.NewWithTLS(smtpAddr, smtpAuth, newTlsConfig())
-		if err != nil {
-			return nil, err
+		tlsConfig := xtls.NewCompatibleConfig()
+		if n.config.AllowInsecureConnections {
+			tlsConfig.InsecureSkipVerify = true
+		} else {
+			tlsConfig.ServerName = n.config.SmtpHost
 		}
-		yak = yakWithTls
+
+		clientOptions = append(clientOptions, mail.WithSSL())
+		clientOptions = append(clientOptions, mail.WithTLSConfig(tlsConfig))
+		clientOptions = append(clientOptions, mail.WithTLSPolicy(mail.TLSMandatory))
 	} else {
-		yak = mailyak.New(smtpAddr, smtpAuth)
+		clientOptions = append(clientOptions, mail.WithSSLPort(true))
+		clientOptions = append(clientOptions, mail.WithTLSPolicy(mail.TLSOpportunistic))
 	}
 
-	yak.From(n.config.SenderAddress)
-	yak.FromName(n.config.SenderName)
-	yak.To(n.config.ReceiverAddress)
-	yak.Subject(subject)
-	yak.Plain().Set(message)
-
-	if err := yak.Send(); err != nil {
-		return nil, err
+	client, err := mail.NewClient(n.config.SmtpHost, clientOptions...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create smtp client: %w", err)
 	}
 
-	return &core.NotifyResult{}, nil
-}
+	client.ErrorHandlerRegistry.RegisterHandler("smtp.qq.com", "QUIT", &wQQMailQuitErrorHandler{})
+	defer client.Close()
 
-func newTlsConfig() *tls.Config {
-	var suiteIds []uint16
-	for _, suite := range tls.CipherSuites() {
-		suiteIds = append(suiteIds, suite.ID)
+	msg := mail.NewMsg()
+	msg.Subject(subject)
+	msg.SetBodyString(mail.TypeTextPlain, message)
+	if n.config.SenderName == "" {
+		msg.From(n.config.SenderAddress)
+	} else {
+		msg.FromFormat(n.config.SenderName, n.config.SenderAddress)
 	}
-	for _, suite := range tls.InsecureCipherSuites() {
-		suiteIds = append(suiteIds, suite.ID)
+	msg.To(n.config.ReceiverAddress)
+
+	if err := client.DialAndSend(msg); err != nil {
+		errShouldBeIgnored := false
+
+		// REF: https://github.com/wneessen/go-mail/issues/463
+		var sendErr *mail.SendError
+		if errors.As(err, &sendErr) {
+			if sendErr.Reason == mail.ErrSMTPReset {
+				errShouldBeIgnored = true
+			}
+		}
+
+		if !errShouldBeIgnored {
+			return nil, fmt.Errorf("failed to send mail: %w", err)
+		}
 	}
 
-	// 为兼容国内部分低版本 TLS 的 SMTP 服务商
-	return &tls.Config{
-		MinVersion:   tls.VersionTLS10,
-		CipherSuites: suiteIds,
-	}
+	return &notifier.NotifyResult{}, nil
 }

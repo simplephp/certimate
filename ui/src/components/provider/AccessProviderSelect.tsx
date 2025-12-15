@@ -1,76 +1,80 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Avatar, Select, type SelectProps, Space, Tag, Typography, theme } from "antd";
+import { Avatar, Select, Tag, Typography, theme } from "antd";
 
 import Show from "@/components/Show";
 import { ACCESS_USAGES, type AccessProvider, type AccessUsageType, accessProvidersMap } from "@/domain/provider";
 
-export type AccessProviderSelectProps = Omit<
-  SelectProps,
-  "filterOption" | "filterSort" | "labelRender" | "options" | "optionFilterProp" | "optionLabelProp" | "optionRender"
-> & {
-  filter?: (record: AccessProvider) => boolean;
-  showOptionTags?: boolean | { [key in AccessUsageType]?: boolean };
-};
+import { type SharedSelectProps } from "./_shared";
 
-const AccessProviderSelect = ({ filter, showOptionTags, ...props }: AccessProviderSelectProps = { showOptionTags: true }) => {
+export interface AccessProviderSelectProps extends SharedSelectProps<AccessProvider> {
+  showOptionTags?: boolean | { [key in AccessUsageType | "builtin"]?: boolean };
+}
+
+const AccessProviderSelect = ({ showOptionTags, onFilter, ...props }: AccessProviderSelectProps = { showOptionTags: true }) => {
   const { t } = useTranslation();
 
   const { token: themeToken } = theme.useToken();
 
-  const [options, setOptions] = useState<Array<{ key: string; value: string; label: string; data: AccessProvider }>>([]);
-  useEffect(() => {
-    const allItems = Array.from(accessProvidersMap.values());
-    const filteredItems = filter != null ? allItems.filter(filter) : allItems;
-    setOptions(
-      filteredItems.map((item) => ({
-        key: item.type,
-        value: item.type,
-        label: t(item.name),
-        disabled: item.builtin,
-        data: item,
-      }))
-    );
-  }, [filter]);
-
   const showOptionTagForDNS = useMemo(() => {
-    return typeof showOptionTags === "object" ? !!showOptionTags[ACCESS_USAGES.DNS] : !!showOptionTags;
+    return typeof showOptionTags === "object" ? !!showOptionTags?.[ACCESS_USAGES.DNS] : !!showOptionTags;
   }, [showOptionTags]);
   const showOptionTagForHosting = useMemo(() => {
-    return typeof showOptionTags === "object" ? !!showOptionTags[ACCESS_USAGES.HOSTING] : !!showOptionTags;
+    return typeof showOptionTags === "object" ? !!showOptionTags?.[ACCESS_USAGES.HOSTING] : !!showOptionTags;
   }, [showOptionTags]);
   const showOptionTagForCA = useMemo(() => {
-    return typeof showOptionTags === "object" ? !!showOptionTags[ACCESS_USAGES.CA] : !!showOptionTags;
+    return typeof showOptionTags === "object" ? !!showOptionTags?.[ACCESS_USAGES.CA] : !!showOptionTags;
   }, [showOptionTags]);
   const showOptionTagForNotification = useMemo(() => {
-    return typeof showOptionTags === "object" ? !!showOptionTags[ACCESS_USAGES.NOTIFICATION] : !!showOptionTags;
+    return typeof showOptionTags === "object" ? !!showOptionTags?.[ACCESS_USAGES.NOTIFICATION] : !!showOptionTags;
   }, [showOptionTags]);
+  const showOptionTagForBuiltin = useMemo(() => {
+    return typeof showOptionTags === "object" ? !!showOptionTags?.["builtin"] : !!showOptionTags;
+  }, [showOptionTags]);
+
+  const options = useMemo<Array<{ key: string; value: string; label: string; data: AccessProvider }>>(() => {
+    return Array.from(accessProvidersMap.values())
+      .filter((provider) => {
+        if (onFilter) {
+          return onFilter(provider.type, provider);
+        }
+
+        return true;
+      })
+      .map((provider) => ({
+        key: provider.type,
+        value: provider.type,
+        label: t(provider.name),
+        disabled: provider.builtin,
+        data: provider,
+      }));
+  }, [onFilter]);
 
   const renderOption = (key: string) => {
     const provider = accessProvidersMap.get(key) ?? ({ type: "", name: "", icon: "", usages: [] } as unknown as AccessProvider);
     return (
       <div className="flex max-w-full items-center justify-between gap-4 overflow-hidden">
-        <Space className="max-w-full grow truncate" size={4}>
+        <div className="flex items-center gap-2 truncate overflow-hidden">
           <Avatar shape="square" src={provider.icon} size="small" />
-          <Typography.Text className="leading-loose" type={provider.builtin ? "secondary" : undefined} ellipsis>
+          <Typography.Text className="flex-1 truncate overflow-hidden" type={provider.builtin ? "secondary" : void 0} ellipsis>
             {t(provider.name)}
           </Typography.Text>
-        </Space>
-        <div className="origin-right scale-[75%]">
-          <Show when={provider.builtin}>
-            <Tag>{t("access.props.provider.builtin")}</Tag>
+        </div>
+        <div className="flex origin-right scale-80 items-center justify-center gap-1 whitespace-nowrap">
+          <Show when={showOptionTagForBuiltin && provider.builtin}>
+            <Tag color="default">{t("access.props.provider.builtin")}</Tag>
           </Show>
           <Show when={showOptionTagForDNS && provider.usages.includes(ACCESS_USAGES.DNS)}>
-            <Tag color="orange">{t("access.props.provider.usage.dns")}</Tag>
+            <Tag color="#d93f0b">{t("access.props.provider.usage.dns")}</Tag>
           </Show>
           <Show when={showOptionTagForHosting && provider.usages.includes(ACCESS_USAGES.HOSTING)}>
-            <Tag color="geekblue">{t("access.props.provider.usage.hosting")}</Tag>
+            <Tag color="#0052cc">{t("access.props.provider.usage.hosting")}</Tag>
           </Show>
           <Show when={showOptionTagForCA && provider.usages.includes(ACCESS_USAGES.CA)}>
-            <Tag color="magenta">{t("access.props.provider.usage.ca")}</Tag>
+            <Tag color="#0e8a16">{t("access.props.provider.usage.ca")}</Tag>
           </Show>
           <Show when={showOptionTagForNotification && provider.usages.includes(ACCESS_USAGES.NOTIFICATION)}>
-            <Tag color="cyan">{t("access.props.provider.usage.notification")}</Tag>
+            <Tag color="#1d76db">{t("access.props.provider.usage.notification")}</Tag>
           </Show>
         </div>
       </div>
@@ -94,11 +98,11 @@ const AccessProviderSelect = ({ filter, showOptionTags, ...props }: AccessProvid
         return <span style={{ color: themeToken.colorTextPlaceholder }}>{props.placeholder}</span>;
       }}
       options={options}
-      optionFilterProp={undefined}
-      optionLabelProp={undefined}
+      optionFilterProp={void 0}
+      optionLabelProp={void 0}
       optionRender={(option) => renderOption(option.data.value)}
     />
   );
 };
 
-export default memo(AccessProviderSelect);
+export default AccessProviderSelect;

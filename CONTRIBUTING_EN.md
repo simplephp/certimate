@@ -1,5 +1,11 @@
 # Contribution Guide
 
+<div align="center">
+
+[中文](CONTRIBUTING.md) ｜ English
+
+</div>
+
 Thank you for taking the time to improve Certimate! Below is a guide for submitting a PR (Pull Request) to the Certimate repository.
 
 We need to be nimble and ship fast given where we are, but we also want to make sure that contributors like you get as smooth an experience at contributing as possible. We've assembled this contribution guide for that purpose, aiming at getting you familiarized with the codebase & how we work with contributors, so you could quickly jump to the fun part.
@@ -21,7 +27,7 @@ Index:
 ### Prerequisites
 
 - Go 1.24+ (for backend code changes)
-- Node.js 22.0+ (for frontend code changes)
+- Node.js 22.12+ (for frontend code changes)
 
 ### Backend Code
 
@@ -87,7 +93,7 @@ Before opening a Pull Request, please open an issue to discuss the change and ge
 
 ### Pull Request Process
 
-1. Fork the repository.
+1. Fork the repository, and then checkout `main` branch.
 2. Before you draft a PR, please open an issue to discuss the changes you want to make.
 3. Create a new branch for your changes.
 4. Please add tests for your changes accordingly.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 
 	"github.com/certimate-go/certimate/internal/app"
 	"github.com/certimate-go/certimate/internal/domain"
@@ -49,13 +48,50 @@ func (r *WorkflowRunRepository) Save(ctx context.Context, workflowRun *domain.Wo
 		}
 	}
 
+	record.Set("workflowRef", workflowRun.WorkflowId)
+	record.Set("trigger", string(workflowRun.Trigger))
+	record.Set("status", string(workflowRun.Status))
+	record.Set("startedAt", workflowRun.StartedAt)
+	record.Set("endedAt", workflowRun.EndedAt)
+	record.Set("graph", workflowRun.Graph)
+	record.Set("error", workflowRun.Error)
+	err = app.GetApp().Save(record)
+	if err != nil {
+		return workflowRun, err
+	}
+
+	workflowRun.Id = record.Id
+	workflowRun.CreatedAt = record.GetDateTime("created").Time()
+	workflowRun.UpdatedAt = record.GetDateTime("updated").Time()
+	return workflowRun, nil
+}
+
+func (r *WorkflowRunRepository) SaveWithCascading(ctx context.Context, workflowRun *domain.WorkflowRun) (*domain.WorkflowRun, error) {
+	collection, err := app.GetApp().FindCollectionByNameOrId(domain.CollectionNameWorkflowRun)
+	if err != nil {
+		return workflowRun, err
+	}
+
+	var record *core.Record
+	if workflowRun.Id == "" {
+		record = core.NewRecord(collection)
+	} else {
+		record, err = app.GetApp().FindRecordById(collection, workflowRun.Id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return workflowRun, err
+			}
+			record = core.NewRecord(collection)
+		}
+	}
+
 	err = app.GetApp().RunInTransaction(func(txApp core.App) error {
-		record.Set("workflowId", workflowRun.WorkflowId)
+		record.Set("workflowRef", workflowRun.WorkflowId)
 		record.Set("trigger", string(workflowRun.Trigger))
 		record.Set("status", string(workflowRun.Status))
 		record.Set("startedAt", workflowRun.StartedAt)
 		record.Set("endedAt", workflowRun.EndedAt)
-		record.Set("detail", workflowRun.Detail)
+		record.Set("graph", workflowRun.Graph)
 		record.Set("error", workflowRun.Error)
 		err = txApp.Save(record)
 		if err != nil {
@@ -70,7 +106,7 @@ func (r *WorkflowRunRepository) Save(ctx context.Context, workflowRun *domain.Wo
 		workflowRecord, err := txApp.FindRecordById(domain.CollectionNameWorkflow, workflowRun.WorkflowId)
 		if err != nil {
 			return err
-		} else if workflowRun.Id == workflowRecord.GetString("lastRunId") {
+		} else if workflowRun.Id == workflowRecord.GetString("lastRunRef") {
 			workflowRecord.IgnoreUnchangedFields(true)
 			workflowRecord.Set("lastRunStatus", record.GetString("status"))
 			err = txApp.Save(workflowRecord)
@@ -79,7 +115,7 @@ func (r *WorkflowRunRepository) Save(ctx context.Context, workflowRun *domain.Wo
 			}
 		} else if workflowRecord.GetDateTime("lastRunTime").Time().IsZero() || workflowRun.StartedAt.After(workflowRecord.GetDateTime("lastRunTime").Time()) {
 			workflowRecord.IgnoreUnchangedFields(true)
-			workflowRecord.Set("lastRunId", record.Id)
+			workflowRecord.Set("lastRunRef", record.Id)
 			workflowRecord.Set("lastRunStatus", record.GetString("status"))
 			workflowRecord.Set("lastRunTime", record.GetString("startedAt"))
 			err = txApp.Save(workflowRecord)
@@ -122,12 +158,12 @@ func (r *WorkflowRunRepository) DeleteWhere(ctx context.Context, exprs ...dbx.Ex
 
 func (r *WorkflowRunRepository) castRecordToModel(record *core.Record) (*domain.WorkflowRun, error) {
 	if record == nil {
-		return nil, fmt.Errorf("record is nil")
+		return nil, errors.New("the record is nil")
 	}
 
-	detail := &domain.WorkflowNode{}
-	if err := record.UnmarshalJSONField("detail", &detail); err != nil {
-		return nil, err
+	graph := &domain.WorkflowGraph{}
+	if err := record.UnmarshalJSONField("graph", &graph); err != nil {
+		return nil, errors.New("field 'graph' is malformed")
 	}
 
 	workflowRun := &domain.WorkflowRun{
@@ -136,12 +172,12 @@ func (r *WorkflowRunRepository) castRecordToModel(record *core.Record) (*domain.
 			CreatedAt: record.GetDateTime("created").Time(),
 			UpdatedAt: record.GetDateTime("updated").Time(),
 		},
-		WorkflowId: record.GetString("workflowId"),
+		WorkflowId: record.GetString("workflowRef"),
 		Status:     domain.WorkflowRunStatusType(record.GetString("status")),
 		Trigger:    domain.WorkflowTriggerType(record.GetString("trigger")),
 		StartedAt:  record.GetDateTime("startedAt").Time(),
 		EndedAt:    record.GetDateTime("endedAt").Time(),
-		Detail:     detail,
+		Graph:      graph,
 		Error:      record.GetString("error"),
 	}
 	return workflowRun, nil

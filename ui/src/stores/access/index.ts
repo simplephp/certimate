@@ -4,18 +4,9 @@ import { create } from "zustand";
 import { type AccessModel } from "@/domain/access";
 import { list as listAccesses, remove as removeAccess, save as saveAccess } from "@/repository/access";
 
-export interface AccessesState {
-  accesses: AccessModel[];
-  loading: boolean;
-  loadedAtOnce: boolean;
+import { type AccessesState, type AccessesStore } from "./types";
 
-  fetchAccesses: () => Promise<void>;
-  createAccess: (access: MaybeModelRecord<AccessModel>) => Promise<AccessModel>;
-  updateAccess: (access: MaybeModelRecordWithId<AccessModel>) => Promise<AccessModel>;
-  deleteAccess: (access: MaybeModelRecordWithId<AccessModel>) => Promise<AccessModel>;
-}
-
-export const useAccessesStore = create<AccessesState>((set) => {
+export const useAccessesStore = create<AccessesStore>((set, get) => {
   let fetcher: Promise<AccessModel[]> | null = null; // 防止多次重复请求
 
   return {
@@ -23,7 +14,13 @@ export const useAccessesStore = create<AccessesState>((set) => {
     loading: false,
     loadedAtOnce: false,
 
-    fetchAccesses: async () => {
+    fetchAccesses: async (refresh = true) => {
+      if (!refresh) {
+        if (get().loadedAtOnce) {
+          return get().accesses;
+        }
+      }
+
       fetcher ??= listAccesses().then((res) => res.items);
 
       try {
@@ -34,6 +31,8 @@ export const useAccessesStore = create<AccessesState>((set) => {
         fetcher = null;
         set({ loading: false });
       }
+
+      return get().accesses;
     },
 
     createAccess: async (access) => {
@@ -63,11 +62,19 @@ export const useAccessesStore = create<AccessesState>((set) => {
 
     deleteAccess: async (access) => {
       await removeAccess(access);
-      set(
-        produce((state: AccessesState) => {
-          state.accesses = state.accesses.filter((a) => a.id !== access.id);
-        })
-      );
+      if (Array.isArray(access)) {
+        set(
+          produce((state: AccessesState) => {
+            state.accesses = state.accesses.filter((e) => !access.some((item) => item.id === e.id));
+          })
+        );
+      } else {
+        set(
+          produce((state: AccessesState) => {
+            state.accesses = state.accesses.filter((e) => e.id !== access.id);
+          })
+        );
+      }
 
       return access as AccessModel;
     },

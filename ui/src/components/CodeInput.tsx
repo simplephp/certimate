@@ -1,4 +1,4 @@
-﻿import { useMemo, useRef } from "react";
+﻿import { useContext, useMemo, useRef } from "react";
 import { json } from "@codemirror/lang-json";
 import { yaml } from "@codemirror/lang-yaml";
 import { StreamLanguage } from "@codemirror/language";
@@ -7,8 +7,9 @@ import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { basicSetup } from "@uiw/codemirror-extensions-basic-setup";
 import { vscodeDark, vscodeLight } from "@uiw/codemirror-theme-vscode";
 import CodeMirror, { type ReactCodeMirrorProps, type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { useFocusWithin } from "ahooks";
+import { useFocusWithin, useHover } from "ahooks";
 import { theme } from "antd";
+import DisabledContext from "antd/es/config-provider/DisabledContext";
 
 import { useBrowserTheme } from "@/hooks";
 import { mergeCls } from "@/utils/css";
@@ -16,15 +17,20 @@ import { mergeCls } from "@/utils/css";
 export interface CodeInputProps extends Omit<ReactCodeMirrorProps, "extensions" | "lang" | "theme"> {
   disabled?: boolean;
   language?: string | string[];
+  readOnly?: boolean;
 }
 
-const CodeInput = ({ className, style, disabled, language, ...props }: CodeInputProps) => {
+const CodeInput = ({ className, style, disabled, language, readOnly, ...props }: CodeInputProps) => {
   const { token: themeToken } = theme.useToken();
 
   const { theme: browserTheme } = useBrowserTheme();
 
+  const injectedDisabled = useContext(DisabledContext);
+  const mergedDisabled = disabled ?? injectedDisabled;
+
   const cmRef = useRef<ReactCodeMirrorRef>(null);
-  const isFocusWithin = useFocusWithin(cmRef.current?.editor);
+  const isFocusing = useFocusWithin(cmRef.current?.editor);
+  const isHovering = useHover(cmRef.current?.editor);
 
   const cmTheme = useMemo(() => {
     if (browserTheme === "dark") {
@@ -66,13 +72,30 @@ const CodeInput = ({ className, style, disabled, language, ...props }: CodeInput
 
   return (
     <div
-      className={mergeCls(className, `hover:border-[${themeToken.colorPrimaryBorderHover}]`)}
+      className={mergeCls("ant-input", className)}
       style={{
-        ...(style ?? {}),
-        border: `1px solid ${isFocusWithin ? (themeToken.Input?.activeBorderColor ?? themeToken.colorPrimaryBorder) : themeToken.colorBorder}`,
+        ...style,
+        paddingBlock: themeToken.Input?.paddingBlock,
+        paddingInline: themeToken.Input?.paddingInline,
+        fontSize: themeToken.Input?.inputFontSize,
+        lineHeight: themeToken.lineHeight,
+        color: mergedDisabled ? themeToken.colorTextDisabled : themeToken.colorText,
+        backgroundColor: mergedDisabled
+          ? themeToken.colorBgContainerDisabled
+          : isFocusing
+            ? (themeToken.Input?.activeBg ?? themeToken.colorBgContainer)
+            : isHovering
+              ? (themeToken.Input?.hoverBg ?? themeToken.colorBgContainer)
+              : void 0,
+        borderWidth: `${themeToken.lineWidth}px`,
+        borderStyle: themeToken.lineType,
+        borderColor: isFocusing
+          ? (themeToken.Input?.activeBorderColor ?? themeToken.colorPrimaryActive)
+          : isHovering
+            ? (themeToken.Input?.hoverBorderColor ?? themeToken.colorPrimaryHover)
+            : themeToken.colorBorder,
         borderRadius: `${themeToken.borderRadius}px`,
-        backgroundColor: disabled ? themeToken.colorBgContainerDisabled : themeToken.colorBgContainer,
-        boxShadow: isFocusWithin ? themeToken.Input?.activeShadow : undefined,
+        boxShadow: isFocusing ? themeToken.Input?.activeShadow : void 0,
         overflow: "hidden",
       }}
     >
@@ -88,6 +111,7 @@ const CodeInput = ({ className, style, disabled, language, ...props }: CodeInput
           indentOnInput: false,
         }}
         extensions={cmExtensions}
+        readOnly={readOnly || mergedDisabled}
         theme={cmTheme}
       />
     </div>

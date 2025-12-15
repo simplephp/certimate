@@ -4,44 +4,47 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/certimate-go/certimate/internal/domain"
 	"github.com/certimate-go/certimate/internal/domain/dtos"
 )
 
-// Deprecated: v0.4.x 将废弃
 const (
-	notifyTestTitle = "测试通知"
-	notifyTestBody  = "欢迎使用 Certimate ，这是一条测试通知。"
+	notifyTestSubject = "[Certimate] Notification Testing"
+	notifyTestMessage = "Welcome to use Certimate!"
 )
 
-// Deprecated: v0.4.x 将废弃
-type settingsRepository interface {
-	GetByName(ctx context.Context, name string) (*domain.Settings, error)
-}
-
-// Deprecated: v0.4.x 将废弃
 type NotifyService struct {
-	settingsRepo settingsRepository
+	accessRepo accessRepository
 }
 
-// Deprecated: v0.4.x 将废弃
-func NewNotifyService(settingsRepo settingsRepository) *NotifyService {
+func NewNotifyService(accessRepo accessRepository) *NotifyService {
 	return &NotifyService{
-		settingsRepo: settingsRepo,
+		accessRepo: accessRepo,
 	}
 }
 
-// Deprecated: v0.4.x 将废弃
-func (n *NotifyService) Test(ctx context.Context, req *dtos.NotifyTestPushReq) error {
-	settings, err := n.settingsRepo.GetByName(ctx, "notifyChannels")
-	if err != nil {
-		return fmt.Errorf("failed to get notify channels settings: %w", err)
+func (n *NotifyService) TestPush(ctx context.Context, req *dtos.NotifyTestPushReq) (*dtos.NotifyTestPushResp, error) {
+	accessConfig := make(map[string]any)
+	if access, err := n.accessRepo.GetById(ctx, req.AccessId); err != nil {
+		return nil, fmt.Errorf("failed to get access #%s record: %w", req.AccessId, err)
+	} else {
+		if access.Reserve != "notif" {
+			return nil, fmt.Errorf("access #%s is not available for notification", req.AccessId)
+		}
+
+		accessConfig = access.Config
 	}
 
-	channelConfig, err := settings.GetNotifyChannelConfig(string(req.Channel))
-	if err != nil {
-		return fmt.Errorf("failed to get notify channel \"%s\" config: %w", req.Channel, err)
+	notifier := NewClient()
+	notifyReq := &SendNotificationRequest{
+		Provider:               req.Provider,
+		ProviderAccessConfig:   accessConfig,
+		ProviderExtendedConfig: make(map[string]any),
+		Subject:                notifyTestSubject,
+		Message:                notifyTestMessage,
+	}
+	if _, err := notifier.SendNotification(ctx, notifyReq); err != nil {
+		return nil, err
 	}
 
-	return SendToChannel(notifyTestTitle, notifyTestBody, string(req.Channel), channelConfig)
+	return &dtos.NotifyTestPushResp{}, nil
 }
